@@ -1,0 +1,30 @@
+# Compilación y archivos temporales
+/build
+/app/build
+*.apk
+*.aar
+*.aab
+.externalNativeBuild
+.cxx/
+
+# Caché de herramientas
+.gradle/
+.kotlin/
+buildOutputCleanup/
+
+# Archivos locales e información sensible (¡NUNCA subir a GitHub!)
+local.properties
+.gradletasknamecache
+/key.properties
+*.keystore
+*.jks
+
+# Configuración del IDE (Android Studio / IntelliJ)
+*.iml
+.idea/
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
