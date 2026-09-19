@@ -1,5 +1,7 @@
 package com.iudigital.radio
 
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -9,10 +11,10 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.result.launch
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,12 +29,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Pause
@@ -52,8 +55,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,7 +73,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import coil.compose.AsyncImage
 import java.io.File
@@ -88,41 +97,41 @@ data class Station(
 val stationList = listOf(
     Station(
         id = 1,
-        name = "Radio IU Digital",
+        name = "Radio IU Digital (Test)",
         genre = "Emisora Institucional",
-        streamUrl = "https://stream.zeno.fm/f3wvbb1f018uv",
+        // MP3 estable de prueba 24/7 para descartar fallos de red locales
+        streamUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
         imageUrl = "https://picsum.photos/seed/iudigital/300/300"
     ),
     Station(
         id = 2,
         name = "Caracol Radio",
         genre = "Noticias y Deportes",
-        streamUrl = "https://26283.live.streamtheworld.com/CARACOL_RADIOAAC.aac",
+        streamUrl = "https://playerservices.streamtheworld.com/api/livestream-redirect/CARACOL_RADIOAAC.aac",
         imageUrl = "https://picsum.photos/seed/caracol/300/300"
     ),
     Station(
         id = 3,
-        name = "RCN Radio",
-        genre = "Hablada / General",
-        streamUrl = "https://26683.live.streamtheworld.com/RCN_RADIOAAC.aac",
-        imageUrl = "https://picsum.photos/seed/rcn/300/300"
+        name = "La FM Bogotá",
+        genre = "Noticias y Música",
+        streamUrl = "https://mdstrm.com/audio/632c9b23d1dcd7027f32f7fe/live.m3u8", //[cite: 6, 7]
+        imageUrl = "https://picsum.photos/seed/lafm/300/300"
     ),
     Station(
         id = 4,
         name = "Radiónica",
         genre = "Música Alternativa",
-        streamUrl = "https://rtvc-radionica.solumedia.com.ar/stream",
+        streamUrl = "http://shoutcast.rtvc.gov.co:8010/;", //[cite: 2, 3]
         imageUrl = "https://picsum.photos/seed/radionica/300/300"
     ),
     Station(
         id = 5,
         name = "W Radio",
         genre = "Noticias y Entrevistas",
-        streamUrl = "https://20853.live.streamtheworld.com/WRADIO_COLOMBIAAAC.aac",
+        streamUrl = "https://playerservices.streamtheworld.com/api/livestream-redirect/WRADIO.mp3",
         imageUrl = "https://picsum.photos/seed/wradio/300/300"
     )
 )
-
 // ==========================================
 // 2. PANTALLA PRINCIPAL (UI Y LÓGICA)
 // ==========================================
@@ -131,9 +140,15 @@ fun RadioScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
 
-    var isPlaying by remember { mutableStateOf(false) }
-    var volume by remember { mutableFloatStateOf(0.8f) }
-    var selectedStation by remember { mutableStateOf(stationList[0]) }
+    var isPlaying by rememberSaveable { mutableStateOf(false) }
+    var volume by rememberSaveable { mutableFloatStateOf(0.8f) }
+    var isMuted by rememberSaveable { mutableStateOf(false) }
+    var previousVolume by rememberSaveable { mutableFloatStateOf(0.8f) }
+    var selectedStationId by rememberSaveable { mutableIntStateOf(1) }
+
+    val selectedStation = remember(selectedStationId) {
+        stationList.firstOrNull { it.id == selectedStationId } ?: stationList[0]
+    }
 
     var profileBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
@@ -154,7 +169,7 @@ fun RadioScreen(modifier: Modifier = Modifier) {
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            cameraLauncher.launch()
+            cameraLauncher.launch(null)
         } else {
             Toast.makeText(context, "Permiso de cámara denegado", Toast.LENGTH_SHORT).show()
         }
@@ -163,35 +178,66 @@ fun RadioScreen(modifier: Modifier = Modifier) {
     fun openCamera() {
         val permissionCheck = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
         if (permissionCheck == PackageManager.PERMISSION_GRANTED) {
-            cameraLauncher.launch()
+            cameraLauncher.launch(null)
         } else {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
-    // Inicialización segura de ExoPlayer para el modo Design/Preview
     val exoPlayer = remember(context) {
         if (!isPreview) {
-            ExoPlayer.Builder(context).build()
-        } else {
-            null
-        }
+            // 1. Camuflar la app como navegador (User-Agent) y permitir redirecciones
+            val dataSourceFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+                .setAllowCrossProtocolRedirects(true)
+
+            // 2. Construir ExoPlayer inyectando la configuración de red
+            val player = ExoPlayer.Builder(context)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(context).setDataSourceFactory(dataSourceFactory))
+                .build()
+
+            // 3. Forzar enrutamiento de audio multimedia
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                .build()
+            player.setAudioAttributes(audioAttributes, true)
+
+            player.addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    Log.e("RadioApp", "Error ExoPlayer: ${error.errorCodeName} - ${error.message}")
+                }
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    when (playbackState) {
+                        Player.STATE_BUFFERING -> Log.d("RadioApp", "Estado: Cargando (Buffering)...")
+                        Player.STATE_READY -> Log.d("RadioApp", "Estado: Listo (Ready)")
+                        Player.STATE_ENDED -> Log.d("RadioApp", "Estado: Terminado (Ended)")
+                        Player.STATE_IDLE -> Log.d("RadioApp", "Estado: Inactivo (Idle)")
+                    }
+                }
+            })
+            player
+        } else null
     }
 
-    // Cambio de canal en vivo
-    LaunchedEffect(selectedStation, isPlaying) {
+    // Efecto 1: Cambiar emisora
+    LaunchedEffect(selectedStationId) {
         if (!isPreview && exoPlayer != null) {
             val mediaItem = MediaItem.fromUri(selectedStation.streamUrl)
-            exoPlayer.stop()
             exoPlayer.setMediaItem(mediaItem)
             exoPlayer.prepare()
-
-            if (isPlaying) {
-                exoPlayer.play()
-            }
+            exoPlayer.playWhenReady = isPlaying
         }
     }
 
+    // Efecto 2: Reproducir / Pausar sin recargar el stream
+    LaunchedEffect(isPlaying) {
+        if (!isPreview && exoPlayer != null) {
+            exoPlayer.playWhenReady = isPlaying
+        }
+    }
+
+    // Efecto 3: Ajuste de volumen
     LaunchedEffect(volume) {
         if (!isPreview && exoPlayer != null) {
             exoPlayer.volume = volume
@@ -230,15 +276,14 @@ fun RadioScreen(modifier: Modifier = Modifier) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp),
+                .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // --- CABECERA ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp),
+                    .padding(top = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -290,12 +335,11 @@ fun RadioScreen(modifier: Modifier = Modifier) {
                 }
             }
 
-            // --- CARÁTULA DINÁMICA DE LA EMISORA SELECCIONADA ---
             Card(
                 modifier = Modifier
-                    .size(200.dp)
-                    .clip(RoundedCornerShape(24.dp)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                    .size(150.dp)
+                    .clip(RoundedCornerShape(20.dp)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
             ) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -310,20 +354,18 @@ fun RadioScreen(modifier: Modifier = Modifier) {
                     Icon(
                         imageVector = Icons.Default.Radio,
                         contentDescription = null,
-                        modifier = Modifier.size(60.dp),
+                        modifier = Modifier.size(50.dp),
                         tint = Color.White.copy(alpha = 0.3f)
                     )
                 }
             }
 
-            // --- INFORMACIÓN DINÁMICA DE LA EMISORA ---
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = selectedStation.name,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = selectedStation.genre,
                     style = MaterialTheme.typography.bodyMedium,
@@ -331,26 +373,31 @@ fun RadioScreen(modifier: Modifier = Modifier) {
                 )
             }
 
-            // --- LISTA DESLIZABLE DE EMISORAS ---
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(vertical = 8.dp)
+            ) {
                 Text(
-                    text = "Seleccionar Emisora:",
+                    text = "Catálogo de Emisoras:",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 8.dp)
+                    modifier = Modifier.padding(bottom = 6.dp)
                 )
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth()
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxSize()
                 ) {
                     items(stationList) { station ->
                         val isSelected = station.id == selectedStation.id
                         Card(
                             modifier = Modifier
-                                .width(130.dp)
+                                .fillMaxWidth()
                                 .clickable {
                                     triggerVibration()
-                                    selectedStation = station
+                                    selectedStationId = station.id
+                                    isPlaying = true
                                 },
                             colors = CardDefaults.cardColors(
                                 containerColor = if (isSelected)
@@ -359,61 +406,92 @@ fun RadioScreen(modifier: Modifier = Modifier) {
                                     MaterialTheme.colorScheme.surfaceVariant
                             ),
                             elevation = CardDefaults.cardElevation(
-                                defaultElevation = if (isSelected) 6.dp else 2.dp
+                                defaultElevation = if (isSelected) 4.dp else 1.dp
                             )
                         ) {
-                            Column(
-                                modifier = Modifier.padding(10.dp),
-                                horizontalAlignment = Alignment.Start
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = station.name,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    maxLines = 1
+                                Icon(
+                                    imageVector = Icons.Default.Radio,
+                                    contentDescription = null,
+                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(28.dp)
                                 )
-                                Text(
-                                    text = station.genre,
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1
-                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = station.name,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                    Text(
+                                        text = station.genre,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // --- CONTROLES DE REPRODUCCIÓN Y VOLUMEN ---
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                IconButton(
-                    onClick = {
-                        triggerVibration()
-                        if (!isPreview && exoPlayer != null) {
-                            if (isPlaying) {
-                                exoPlayer.pause()
-                            } else {
-                                exoPlayer.play()
-                            }
-                        }
-                        isPlaying = !isPlaying
-                    },
-                    modifier = Modifier
-                        .size(68.dp)
-                        .background(MaterialTheme.colorScheme.primary, CircleShape)
+                Row(
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (isPlaying) "Pausar" else "Reproducir",
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(38.dp)
-                    )
+                    IconButton(
+                        onClick = {
+                            triggerVibration()
+                            if (isMuted) {
+                                volume = previousVolume
+                                isMuted = false
+                            } else {
+                                previousVolume = volume
+                                volume = 0f
+                                isMuted = true
+                            }
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = if (isMuted || volume == 0f) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = "Mute",
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(20.dp))
+
+                    IconButton(
+                        onClick = {
+                            triggerVibration()
+                            isPlaying = !isPlaying
+                        },
+                        modifier = Modifier
+                            .size(64.dp)
+                            .background(MaterialTheme.colorScheme.primary, CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Pausar" else "Reproducir",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -426,7 +504,10 @@ fun RadioScreen(modifier: Modifier = Modifier) {
                     )
                     Slider(
                         value = volume,
-                        onValueChange = { volume = it },
+                        onValueChange = {
+                            volume = it
+                            isMuted = (it == 0f)
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .padding(horizontal = 8.dp),
@@ -446,7 +527,6 @@ fun RadioScreen(modifier: Modifier = Modifier) {
     }
 }
 
-// PERSISTENCIA DE IMAGEN LOCAL
 private fun saveProfileImage(context: Context, bitmap: Bitmap) {
     try {
         val filename = "profile_picture.jpg"
