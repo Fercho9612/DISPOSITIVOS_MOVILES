@@ -21,31 +21,37 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            //  Se envuelve la ruta dentro de file(...) o se referencia mediante el objeto 'android'
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // Configuración del objetivo JVM para Kotlin (Resuelve la inconsistencia)
-    kotlinOptions {
-        jvmTarget = "11"
-    }
-
-    buildFeatures {
+       buildFeatures {
         compose = true
+    }
+}
+// Configuración moderna de opciones del compilador de Kotlin
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
 dependencies {
     // Versiones estables compatibles con AGP 8.7.0 y SDK 35/36
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
-    implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.activity:activity-compose:1.9.3")
+
     // Jetpack Compose BOM
-    implementation(platform("androidx.compose:compose-bom:2024.09.02"))
+    implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -53,22 +59,28 @@ dependencies {
 
     // Dependencias del proyecto
     // Carga de imágenes para el perfil
-    implementation("io.coil-kt:coil-compose:2.6.0")
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
     // Iconos extendidos de Material Design (Play, Pause, Volume, Camera, etc.)
     implementation("androidx.compose.material:material-icons-extended")
 
     // Reproductor multimedia para streaming de radio
-    val media3Version = "1.3.1"
+    val media3Version = "1.4.1"
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-exoplayer-hls:$media3Version")
 
+        // Librerías para Retrofit y Gson (Peticiones HTTP y JSON)
+    implementation("com.squareup.retrofit2:retrofit:2.11.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.11.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
     // Pruebas y Debug
     testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.3.0")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
-    androidTestImplementation(platform("androidx.compose:compose-bom:2024.09.02"))
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.10.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    implementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
