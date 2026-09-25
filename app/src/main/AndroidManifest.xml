@@ -12,14 +12,13 @@
     <!-- Permisos para cámara y almacenamiento -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-    <uses-feature
-            android:name="android.hardware.camera"
-            android:required="false" />
 
     <!-- Declaración de hardware (Cámara opcional para que instale en cualquier dispositivo) -->
     <uses-feature
             android:name="android.hardware.camera"
             android:required="false" />
+
+
 
     <application
             android:allowBackup="true"
