@@ -3,6 +3,7 @@ package com.iudigital.radio.ui.screen
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.media.AudioManager
 import android.os.Build
 import android.util.Log
@@ -17,7 +18,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -89,6 +90,7 @@ fun RadioScreen(
 
     //  Estado para almacenar el texto que escribe el usuario
     var searchQuery by remember { mutableStateOf("") }
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
 ///  FILTRADO COMBINADO (Por Género / Favoritos Y Nombre)
     val filteredStations = remember(stations, selectedGenre, searchQuery, favorites) {
@@ -199,38 +201,58 @@ fun RadioScreen(
         }
     }
 
+    // Variables de caché en memoria para no repetir peticiones a la API
+    var colombiaStationsCache by remember { mutableStateOf<List<Station>>(emptyList()) }
+    var internationalStationsCache by remember { mutableStateOf<List<Station>>(emptyList()) }
+
     // Función para cargar emisoras según la pestaña seleccionada
+    // Función optimizada con caché y corrutinas en Dispatchers.IO
     fun loadStations(tab: CategoryTab) {
-        coroutineScope.launch {
+        coroutineScope.launch(Dispatchers.IO) {
+            // 1. Si ya tenemos datos en memoria, los mostramos AL INSTANTE sin pantalla negra
+            val cachedList = when (tab) {
+                CategoryTab.COLOMBIA -> colombiaStationsCache
+                CategoryTab.INTERNATIONAL -> internationalStationsCache
+            }
+
+            if (cachedList.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    stations = cachedList
+                    isLoading = false
+                }
+                return@launch
+            }
+
+            // 2. Si no hay caché, mostramos el cargador solo la primera vez
+            withContext(Dispatchers.Main) { isLoading = true }
+
             try {
-                isLoading = true
-                stations = withContext(Dispatchers.IO) {
-                    when (tab) {
-                        CategoryTab.COLOMBIA -> RetrofitClient.apiService.getStationsByCountry()
-                        CategoryTab.INTERNATIONAL -> RetrofitClient.apiService.getSpanishStations()
+                // Petición a la red en hilo de E/S
+                val result = when (tab) {
+                    CategoryTab.COLOMBIA -> RetrofitClient.apiService.getStationsByCountry()
+                    CategoryTab.INTERNATIONAL -> RetrofitClient.apiService.getSpanishStations()
+                }
+
+                // Guardamos en caché y actualizamos la interfaz
+                withContext(Dispatchers.Main) {
+                    if (tab == CategoryTab.COLOMBIA) {
+                        colombiaStationsCache = result
+                    } else {
+                        internationalStationsCache = result
                     }
+                    stations = result
                 }
             } catch (e: Exception) {
                 Log.e("RadioApp", "Error al cargar emisoras: ${e.message}")
             } finally {
-                isLoading = false
+                withContext(Dispatchers.Main) {
+                    isLoading = false
+                }
             }
         }
     }
 
-    /*LaunchedEffect(Unit) {
-        try {
-            isLoading = true
-            stations = withContext(Dispatchers.IO) {
-                RetrofitClient.apiService.getStationsByCountry()
-            }
-        } catch (e: Exception) {
-            Log.e("RadioApp", "Error: ${e.message}")
-        } finally {
-            isLoading = false
-        }
-    }*/
-    // Cambiamos (Unit) por (selectedTab) para que reaccione si cambias de pestaña
+     // Cambiamos (Unit) por (selectedTab) para que reaccione si cambias de pestaña
     LaunchedEffect(selectedTab) {
         loadStations(selectedTab)
     }
@@ -247,226 +269,253 @@ fun RadioScreen(
     fun filterByGenre(genre: String) {
         triggerVibration(context, 30)
         selectedGenre = genre
-
-        if (genre == "Favoritos") return
-
-        coroutineScope.launch {
-            try {
-                isLoading = true
-                stations = withContext(Dispatchers.IO) {
-                    if (genre == "Todos") {
-                        RetrofitClient.apiService.getStationsByCountry()
-                    } else {
-                        RetrofitClient.apiService.searchStationsByTag(tag = genre.lowercase())
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("RadioApp", "Error al filtrar: ${e.message}")
-            } finally {
-                isLoading = false
-            }
-        }
     }
 
 // USO DE LAZY-COLUMN PARA PERMITIR DESPLAZAMIENTO EN MODO HORIZONTAL / ROTACIÓN
-    LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFF121212))
-            .padding(top = 8.dp)
-    ) {
-        // Encabezado con Cámara
-        item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "IU Digital Radio",
-                    color = Color.White,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
+    // Componente reutilizable para los controles del encabezado
+    @Composable
+    fun HeaderControls() {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "IU Digital Radio",
+                color = Color.White,
+                fontSize = if (isLandscape) 16.sp else 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+            IconButton(
+                onClick = {
+                    triggerVibration(context, 50)
+                    val hasCameraPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.CAMERA
+                    ) == PackageManager.PERMISSION_GRANTED
 
-                IconButton(
-                    onClick = {
-                        triggerVibration(context, 50)
-
-                        // Verificación directa e implícita de los permisos
-                        val hasCameraPermission = ContextCompat.checkSelfPermission(
+                    val hasStoragePermission = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                        ContextCompat.checkSelfPermission(
                             context,
-                            Manifest.permission.CAMERA
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
                         ) == PackageManager.PERMISSION_GRANTED
+                    } else true
 
-                        val hasStoragePermission = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                            ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.WRITE_EXTERNAL_STORAGE
-                            ) == PackageManager.PERMISSION_GRANTED
-                        } else true
+                    if (hasCameraPermission && hasStoragePermission) {
+                        cameraLauncher.launch(null)
+                    } else {
+                        permissionsLauncher.launch(requiredPermissions)
+                    }
+                },
+                modifier = Modifier
+                    .background(Color(0xFF2196F3), CircleShape)
+                    .size(if (isLandscape) 34.dp else 40.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CameraAlt,
+                    contentDescription = "Tomar Foto",
+                    tint = Color.White,
+                    modifier = Modifier.size(if (isLandscape) 18.dp else 22.dp)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(2.dp))
 
-                        if (hasCameraPermission && hasStoragePermission) {
-                            cameraLauncher.launch(null)
-                        } else {
-                            // Solicita permisos si falta cualquiera de los dos
-                            permissionsLauncher.launch(requiredPermissions)
-                        }
-                    },
-                    modifier = Modifier
-                        .background(Color(0xFF2196F3), CircleShape)
-                        .size(40.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CameraAlt,
-                        contentDescription = "Tomar Foto",
-                        tint = Color.White,
-                        modifier = Modifier.size(22.dp)
-                    )
+        CategorySelector(
+            selectedTab = selectedTab,
+            onTabSelected = { newTab ->
+                if (selectedTab != newTab) {
+                    triggerVibration(context, 30)
+                    selectedTab = newTab
+                    selectedGenre = "Todos"
                 }
             }
-            Spacer(modifier = Modifier.height(8.dp))
-        }
+        )
+        Spacer(modifier = Modifier.height(2.dp))
 
-        // Selector de Pestañas (Colombia / Internacional)
-        item {
-            CategorySelector(
-                selectedTab = selectedTab,
-                onTabSelected = { newTab ->
-                    if (selectedTab != newTab) {
-                        triggerVibration(context, 30)
-                        selectedTab = newTab
-                        selectedGenre = "Todos" // Reinicia el filtro de género al cambiar de pestaña
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("Buscar emisora...", fontSize = 11.sp) },
+            leadingIcon = {
+                Icon(imageVector = Icons.Default.Search, contentDescription = "Buscar", modifier = Modifier.size(18.dp))
+            },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(
+                            imageVector = Icons.Default.Clear,
+                            contentDescription = "Limpiar",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            },
+            singleLine = true,
+            textStyle = LocalTextStyle.current.copy(fontSize = 13.sp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .padding(horizontal = 12.dp, vertical = 2.dp)
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+
+        activeStation?.let { station ->
+            ActiveStationCard(
+                station = station,
+                isPlaying = isPlaying,
+                isFavorite = favorites.contains(station.id),
+                onPlayPauseClick = {
+                    triggerVibration(context, 50)
+                    if (isPlaying) exoPlayer.pause() else exoPlayer.play()
+                },
+                onFavoriteClick = {
+                    triggerVibration(context, 50)
+                    favorites = if (favorites.contains(station.id)) {
+                        favorites - station.id
+                    } else {
+                        favorites + station.id
                     }
                 }
             )
             Spacer(modifier = Modifier.height(4.dp))
         }
 
-        //  BUSCADOR DE EMISORAS
-        item {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                label = { Text("Buscar emisora...") },
-                leadingIcon = {
-                    Icon(imageVector = Icons.Default.Search, contentDescription = "Buscar")
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
-                            Icon(imageVector = Icons.Default.Clear, contentDescription = "Limpiar")
+    // Estado para guardar el volumen previo al silenciar
+    var previousVolume by remember { mutableIntStateOf(currentVolume) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+    ) {
+        VolumeControlCard(
+            currentVolume = currentVolume,
+            maxVolume = maxVolume,
+            onVolumeChanged = { newVolume ->
+                currentVolume = newVolume
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
+            },
+            onVolumeIconClick = {
+                triggerVibration(context, 30)
+                if (currentVolume > 0) {
+                    previousVolume = currentVolume
+                    currentVolume = 0
+                } else {
+                    currentVolume = if (previousVolume > 0) previousVolume else maxVolume / 2
+                }
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, currentVolume, 0)
+            }
+        )
+    }
+        Spacer(modifier = Modifier.height(2.dp))
+
+        GenreFilterChips(
+            selectedGenre = selectedGenre,
+            onGenreSelected = { genre -> filterByGenre(genre) }
+        )
+    }
+
+    // Componente reutilizable para la lista de emisoras
+    @Composable
+    fun StationsGridContent(columns: Int) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            if (isLoading) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(150.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFF2A75FF))
+                    }
+                }
+            } else if (filteredStations.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (selectedGenre == "Favoritos") "No tienes emisoras en favoritos" else "No se encontraron emisoras",
+                            color = Color.Gray,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            } else {
+                val chunkedStations = filteredStations.chunked(columns)
+                items(items = chunkedStations) { rowStations ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (station in rowStations) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                StationGridItem(
+                                    station = station,
+                                    isActive = activeStation?.id == station.id,
+                                    onClick = { playStation(station) }
+                                )
+                            }
+                        }
+                        repeat(columns - rowStations.size) {
+                            Spacer(modifier = Modifier.weight(1f))
                         }
                     }
-                },
-                singleLine = true,
+                }
+            }
+        }
+    }
+
+    // RENDERS SEGÚN ORIENTACIÓN
+    if (isLandscape) {
+        // MODO HORIZONTAL: División en dos columnas
+        Row(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color(0xFF121212))
+                .padding(8.dp)
+        ) {
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-        }
+                    .weight(0.42f)
+                    .fillMaxHeight()
+            ) {
+                HeaderControls()
+            }
 
-        //  Tarjeta de Emisora Activa
-        item {
-            activeStation?.let { station ->
-                ActiveStationCard(
-                    station = station,
-                    isPlaying = isPlaying,
-                    isFavorite = favorites.contains(station.id),
-                    onPlayPauseClick = {
-                        triggerVibration(context, 50)
-                        if (isPlaying) exoPlayer.pause() else exoPlayer.play()
-                    },
-                    onFavoriteClick = {
-                        triggerVibration(context, 50)
-                        favorites = if (favorites.contains(station.id)) {
-                            favorites - station.id
-                        } else {
-                            favorites + station.id
-                        }
-                    }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Column(
+                modifier = Modifier
+                    .weight(0.58f)
+                    .fillMaxHeight()
+            ) {
+                StationsGridContent(columns = 2)
             }
         }
-
-         // 2. Control de Volumen
-        item {
-            VolumeControlCard(
-                currentVolume = currentVolume,
-                maxVolume = maxVolume,
-                onVolumeChanged = { newVolume ->
-                    currentVolume = newVolume
-                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
-                }
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-
-        // Filtros por Género + Favoritos
-        item {
-            GenreFilterChips(
-                selectedGenre = selectedGenre,
-                onGenreSelected = { genre -> filterByGenre(genre) }
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-
-        // 4. Grilla de Emisoras
-        if (isLoading) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(200.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(color = Color(0xFF2A75FF))
-                }
-            }
-        } else if (filteredStations.isEmpty()) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (selectedGenre == "Favoritos") "No tienes emisoras en favoritos" else "No se encontraron emisoras",
-                        color = Color.Gray,
-                        fontSize = 14.sp
-                    )
-                }
-            }
-        } else {
-            // Se organiza la lista en filas de a 3 columnas para permitir scroll continuo
-            val chunkedStations = filteredStations.chunked(3)
-            items(
-                items = chunkedStations
-            ) { rowStations: List<Station> ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    for (station in rowStations) {
-                        Box(modifier = Modifier.weight(1f)) {
-                            StationGridItem(
-                                station = station,
-                                isActive = activeStation?.id == station.id,
-                                onClick = { playStation(station) }
-                            )
-                        }
-                    }
-                    repeat(3 - rowStations.size) {
-                        Spacer(modifier = Modifier.weight(1f))
-                    }
-                }
+    } else {
+        // MODO VERTICAL: Columna apilada
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color(0xFF121212))
+                .padding(top = 8.dp)
+        ) {
+            HeaderControls()
+            Spacer(modifier = Modifier.height(4.dp))
+            Box(modifier = Modifier.weight(1f)) {
+                StationsGridContent(columns = 3)
             }
         }
     }
